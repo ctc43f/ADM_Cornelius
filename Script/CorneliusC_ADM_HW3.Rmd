@@ -1,0 +1,347 @@
+---
+title: 'ADM Homework #3'
+author: "Chris Cornelius"
+date: "November 23, 2017"
+output: pdf_document
+---
+# Part One: Re-do of Last Week's Homework (Cluster Analysis)
+
+I am going to start by pulling in the crash data and applying to it all of the basic clean-up techniques, such as imputing missing values, removing the NAs, etc.  I want to get it to a basic state before making some decisions on how to categorize, dummy, and prep for cluster analysis.
+
+```{r}
+library(cluster)
+library(fpc)
+library(klaR)
+library(clustMixType)
+library(dummies)
+library(reshape)
+
+```
+
+```{r}
+crash_data <- read.csv("C:/Users/chris/Desktop/Course Materials/BIA 6301 Applied Data Mining/Homework 2/Data/crash.csv")
+
+crash_data_REAL <- read.csv("C:/Users/chris/Desktop/Course Materials/BIA 6301 Applied Data Mining/Homework 2/Data/crash.csv")
+
+#Remove Date of Crash (Already there in the columsn at the end of the data frame.
+crash_data <- crash_data[-3]
+
+#Impute missing blood alcohol levels, assume alcohol was not a factor or considered if record is missing and replace with zero.
+crash_data$Alcohol.Results[is.na(crash_data$Alcohol.Results)] <- 0
+
+#Remove numeric year, all incidents occurred in 2011.
+crash_data <- crash_data[-12]
+
+#Assume drug involvement is NO if it was NA or Not Reported.  Similar to alcohol, if it was suspected as a factor they should have tested for it and determined whether it was or not.
+crash_data$Drug.Involvement[crash_data$Drug.Involvement=="Not Reported"] <- "Unknown"
+crash_data$Drug.Involvement[crash_data$Drug.Involvement=="\\N"] <- "Unknown"
+crash_data$Drug.Involvement[crash_data$Drug.Involvement=="Unknown"] <- "No"
+
+#Impute the missing ages with the median.  There aren't many missing values so it shouldn't cause too much error.
+crash_data$Age[is.na(crash_data$Age)] <- round(median(crash_data$Age, na.rm = TRUE), x=0)
+
+#I am going to modify the states with the abbreviations and add in the geographic regions provided in the original assignment.
+crash_data$state_abb <- state.abb[match(crash_data$State, state.name)]
+table(crash_data$state_abb)
+sum(is.na(crash_data$state_abb))
+
+State_error <- as.data.frame(unique(crash_data$State[is.na(crash_data$state_abb)]))
+
+crash_data$state_abb[is.na(crash_data$state_abb)] <- "DC"
+table(crash_data$state_abb)
+sum(is.na(crash_data$state_abb))
+
+Midwest_V <- as.vector(c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD"))
+Northeast_V <- as.vector(c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA"))
+South_V <- as.vector(c("DE", "FL", "GA", "MD", "NC", "SC", "VA", "DC", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX"))
+West_V <- as.vector(c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA"))
+
+crash_data$Region <- "AAA"
+crash_data$Midwest <- ifelse(is.element(crash_data$state_abb, Midwest_V),1,0)
+crash_data$Northeast <- ifelse(is.element(crash_data$state_abb, Northeast_V),1,0)
+crash_data$South <- ifelse(is.element(crash_data$state_abb, South_V),1,0)
+crash_data$West <- ifelse(is.element(crash_data$state_abb, West_V),1,0)
+
+crash_data$Region[crash_data$Midwest == 1] <- "Midwest"
+crash_data$Region[crash_data$Northeast == 1] <- "Northeast"
+crash_data$Region[crash_data$South == 1] <- "South"
+crash_data$Region[crash_data$West == 1] <- "West"
+
+crash_data <- crash_data[-(17:20)]
+crash_data <- crash_data[-1]
+
+#Taking out race because of the imbalance of data.
+crash_data <- crash_data[-8]
+
+#I am going to modify the weather and show it as one of two factors: clear/cloudy or weather condition.
+crash_data$Weather_Status <- "AAA"
+crash_data$Weather_Status[crash_data$Atmospheric.Condition == "Clear" | crash_data$Atmospheric.Condition == "Cloudy"] <- "Clear / Cloudy"
+crash_data$Weather_Status[crash_data$Weather_Status == "AAA"] <- "Weather Condition"
+crash_data <- crash_data[-1]
+
+#Removing numeric day of month.  As an insurance adjuster I will have trouble monitoring that and accounting for it in pricing policies.
+crash_data <- crash_data[-10]
+
+#I want to reduce the different types of persons and consolidate into three categories: drivers, passengers, and pedestrians.
+crash_data$PT_Pedestrian <- 0
+crash_data$PT_Driver <- 0
+crash_data$PT_Passenger <- 0
+
+crash_data$PT_Pedestrian[crash_data$Person.Type == "Bicyclist"] <- 1
+crash_data$PT_Driver[crash_data$Person.Type == "Driver of a Motor Vehicle In-Transport"] <- 1
+crash_data$PT_Passenger[crash_data$Person.Type == "Occupant of a Motor Vehicle Not In- Transport"] <- 1
+crash_data$PT_Passenger[crash_data$Person.Type == "Occupant of a Non-Motor Vehicle Transport Device"] <- 1
+crash_data$PT_Passenger[crash_data$Person.Type == "Passenger of a Motor Vehicle In-Transport"] <- 1
+crash_data$PT_Pedestrian[crash_data$Person.Type == "Pedestrian"] <- 1
+crash_data$PT_Pedestrian[crash_data$Person.Type == "Persons In/On Buildings"] <- 1
+crash_data$PT_Pedestrian[crash_data$Person.Type == "Persons on Personal Conveyances"] <- 1
+crash_data$PT_Passenger[crash_data$Person.Type == "Unknown Occupant Type in a Motor Vehicle In- Transport"] <- 1
+
+crash_data$Victim_Type <- "AAA"
+crash_data$Victim_Type[crash_data$PT_Driver == 1] <- "Driver"
+crash_data$Victim_Type[crash_data$PT_Pedestrian == 1] <- "Pedestrian"
+crash_data$Victim_Type[crash_data$PT_Passenger == 1] <- "Passenger"
+table(crash_data$Victim_Type)
+
+crash_data <- crash_data[-5]
+crash_data <- crash_data[-(13:15)]
+
+#I want to replace numeric month and numeric day of week with the actual day and month.
+Crash.Date.month = c(1:12)
+Letter_Month = c("Jan", "Feb", "Mar","Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+Month_Lookup <- data.frame(Crash.Date.month, Letter_Month)
+
+Crash.Date.day.of.week = c(1:7)
+Letter_Day = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+Day_Lookup <- data.frame(Crash.Date.day.of.week, Letter_Day)
+
+crash_data <- merge(crash_data, Month_Lookup, by="Crash.Date.month")
+crash_data <- merge(crash_data, Day_Lookup, by="Crash.Date.day.of.week")
+crash_data <- crash_data[-(1:2)]
+
+#I am going to convert the raw ages into buckets.  The first will be 0 to 16 for those that are not old enough to drive.  Another will be those over 60.  I will do a bucket of 16 to 30, 30 to 60.
+
+##hist(crash_data$Age[crash_data$Victim_Type=="Driver"], breaks = 30)
+##hist(crash_data$Age[crash_data$Victim_Type=="Passenger"], breaks = 30)
+
+crash_data$Age_Category <- "AAA"
+crash_data$Age_Category[crash_data$Age >= 0 & crash_data$Age < 16] <- "0 to 15"
+crash_data$Age_Category[crash_data$Age >= 16 & crash_data$Age < 26] <- "16 to 25"
+crash_data$Age_Category[crash_data$Age >= 26 & crash_data$Age < 41] <- "26 to 40"
+crash_data$Age_Category[crash_data$Age >= 41 & crash_data$Age < 61] <- "40 to 60"
+crash_data$Age_Category[crash_data$Age >= 61] <- "Over 60"
+
+crash_data <- crash_data[-3]
+
+#Remove State
+crash_data <- crash_data[-7]
+
+#Modify the streets into Urban/Rural and Road Type
+crash_data$Roadway_UrbRur <- substr(crash_data$Roadway, 1, 5)
+crash_data$Roadway_Street <- substr(crash_data$Roadway, 7, length(crash_data$Roadway))
+
+crash_data <- crash_data[-2]
+
+#Converting Alcohol to three categories.
+crash_data$Alcohol_Level <- "AAA"
+crash_data$Alcohol_Level[crash_data$Alcohol.Results == 0] <- "None"
+crash_data$Alcohol_Level[crash_data$Alcohol.Results > 0 & crash_data$Alcohol.Results < 0.08] <- "Under Limit"
+crash_data$Alcohol_Level[crash_data$Alcohol.Results >= 0.08] <- "Over Limit"
+crash_data <- crash_data[-2]
+
+#Convert Number of Fatalities into Single or Multiple
+crash_data$Fatality_Count <- "AAA"
+crash_data$Fatality_Count[crash_data$Fatalities.in.crash == 1] <- "Single"
+crash_data$Fatality_Count[crash_data$Fatality_Count == "AAA"] <- "Multiple"
+
+crash_data <- crash_data[-1]
+
+#Consolidate Injury Type
+crash_data$Injury_Type <- "AAA"
+crash_data$Injury_Type[crash_data$Injury.Severity == "Fatal Injury (K)"] <- "Fatal"
+crash_data$Injury_Type[crash_data$Injury.Severity == "Incapacitating Injury (A)"] <- "Major"
+crash_data$Injury_Type[crash_data$Injury_Type == "AAA"] <- "Minor_None"
+table(crash_data$Injury_Type)
+crash_data <- crash_data[-3]
+
+#Remove Road Type
+crash_data <- crash_data[-10]
+
+#As an insurance agency, day of week and month are less important because a policy doesn't depend on the time of year you drive.
+crash_data <- crash_data[-(6:7)]
+```
+
+# Cluster Analysis and K-Medoids
+I am first going to try the Gower's Measures with K-Medoids.  I have 100% Categorical Variables with Strings so I can convert the entire data frame into a set of dummy variable columns.  I will then try the same k that I got from the second homework and see if the clusters that it comes up with look similar.
+
+```{r}
+crash_factor <- crash_data
+crash_factor[1:10] <- lapply(crash_factor[1:10], factor)
+
+crash_kmodes5 <- kmodes(crash_factor, modes = 5, iter.max = 10)
+crash_kmodes6 <- kmodes(crash_factor, modes = 6, iter.max = 10)
+crash_kmodes7 <- kmodes(crash_factor, modes = 7, iter.max = 10)
+crash_kmodes8 <- kmodes(crash_factor, modes = 8, iter.max = 10)
+crash_kmodes9 <- kmodes(crash_factor, modes = 9, iter.max = 10)
+crash_kmodes10 <- kmodes(crash_factor, modes = 10, iter.max = 10)
+crash_kmodes11 <- kmodes(crash_factor, modes = 11, iter.max = 10)
+
+crash_kmodes5$withindiff
+crash_kmodes6$withindiff
+crash_kmodes7$withindiff
+crash_kmodes8$withindiff
+crash_kmodes9$withindiff
+crash_kmodes10$withindiff
+crash_kmodes11$withindiff
+
+mean(crash_kmodes5$withindiff)
+mean(crash_kmodes6$withindiff)
+mean(crash_kmodes7$withindiff)
+mean(crash_kmodes8$withindiff)
+mean(crash_kmodes9$withindiff)
+mean(crash_kmodes10$withindiff)
+mean(crash_kmodes11$withindiff)
+
+x <- c(5,6,7,8,9,10,11)
+y <- c(mean(crash_kmodes5$withindiff), mean(crash_kmodes6$withindiff), mean(crash_kmodes7$withindiff), mean(crash_kmodes8$withindiff), mean(crash_kmodes9$withindiff), mean(crash_kmodes10$withindiff), mean(crash_kmodes11$withindiff))
+plot(x, y, xlab = "Number of Clusters", ylab = "Avg. Within Difference", main = "Avg. Cluster Within Diff as a function of # of Clusters")
+```
+
+We want the within difference to be as small as possible but also that as the number of clusters increases, the greater risk of overlearning.  In this case we can see the average levels off.  Similar to the elbow method, can we look at diminishing returns, where we add more clusters but don't see a proportional increase in sameness?  In this case we see a big drop in within difference going from 5 to 6, less from 6 to 7, etc.  I will consider 7 clusters because it looks like the line levels off between 7 and 8.
+
+```{r}
+crash_data$kmodes_7_cluster <- crash_kmodes7$cluster
+```
+
+# Cluster Analysis and Gower + K-Medoids
+
+To combine the gower's measure and k-medoids, first make all variables dummy columns (no numeric variables) and then calculate dissimilarity matrix.
+```{r}
+crash_gower_dis <- crash_data[1:10] #Exclude clusters from k-modes
+crash_gower_dummy <- dummy.data.frame(crash_gower_dis)
+crash_matrix_gower_mixed <- daisy(crash_gower_dummy, metric = "gower")
+
+crash_gower_pam6 <- pam(crash_matrix_gower_mixed, k = 6)
+crash_gower_pam7 <- pam(crash_matrix_gower_mixed, k = 7)
+crash_gower_pam8 <- pam(crash_matrix_gower_mixed, k = 8)
+crash_gower_pam9 <- pam(crash_matrix_gower_mixed, k = 9)
+
+crash_gower_pam6$clusinfo
+crash_gower_pam7$clusinfo
+crash_gower_pam8$clusinfo
+crash_gower_pam9$clusinfo
+
+crash_data$gowpam_7_cluster <- crash_gower_pam7$clustering
+```
+
+Let's compare the two methods and see some stats on each of the 7 clusters.
+
+```{r}
+#table(crash_data$Region[crash_data$kmodes_7_cluster==1])
+#table(crash_data$Region[crash_data$kmodes_7_cluster==2])
+#table(crash_data$Region[crash_data$kmodes_7_cluster==3])
+#table(crash_data$Region[crash_data$kmodes_7_cluster==4])
+#table(crash_data$Region[crash_data$kmodes_7_cluster==5])
+#table(crash_data$Region[crash_data$kmodes_7_cluster==6])
+#table(crash_data$Region[crash_data$kmodes_7_cluster==7])
+
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==1])
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==2])
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==3])
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==4])
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==5])
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==6])
+#table(crash_data$Age_Category[crash_data$kmodes_7_cluster==7])
+
+write.csv(crash_data, "C:/Users/chris/Desktop/Course Materials/BIA 6301 Applied Data Mining/Homework 2/Data/crashcluster.csv")
+```
+
+I dropped this data into Excel to come up with charts for each cluster.  What I wanted to look for was, at that granular level, which variables were the majority in that category for each cluster.  These would decrease homogenity within the cluster and decrease the distance between each cluster.
+
+Looking at the Pam/Gower clusters with k = 7, weather, alcohol level, and victim count were the majority within each cluster.  For k-modes, victim type, alcohol level, and victim count were the majority within each cluster.  In other words, the clusters were different EXCEPT for these factors.  K-modes did have a cluster around victim type: the victim type was all passenger, predominantly in the West, and in the 0 to 15 age group with mostly minor or non-fatal injuries.  This makes sense, these would NOT be drivers of the vehicles.  The West part is interesting, I will make note of it in my analysis.
+
+I want to remove the non-differentiating factors and rerun the k-modes and pam gow analysis.  If you look at these variables, they are also things as an insurance company we can't control or evaluate when issuing policies.
+
+```{r}
+crash_data_Small <- crash_data[-1] #Remove Drug Involvement
+crash_data_Small <- crash_data_Small[-3] #Remove Weather
+crash_data_Small <- crash_data_Small[-(6:7)] #Remove alcohol and fatality count
+crash_data_Small <- crash_data_Small[-(7:8)] #Remove clusters
+
+```
+
+I am going to repeat the cluster analysis I did before.
+
+```{r}
+scrash_factor <- crash_data_Small
+scrash_factor[1:6] <- lapply(crash_factor[1:6], factor)
+
+scrash_kmodes4 <- kmodes(scrash_factor, modes = 4, iter.max = 10)
+scrash_kmodes5 <- kmodes(scrash_factor, modes = 5, iter.max = 10)
+scrash_kmodes6 <- kmodes(scrash_factor, modes = 6, iter.max = 10)
+scrash_kmodes7 <- kmodes(scrash_factor, modes = 7, iter.max = 10)
+scrash_kmodes8 <- kmodes(scrash_factor, modes = 8, iter.max = 10)
+scrash_kmodes9 <- kmodes(scrash_factor, modes = 9, iter.max = 10)
+scrash_kmodes10 <- kmodes(scrash_factor, modes = 10, iter.max = 10)
+scrash_kmodes11 <- kmodes(scrash_factor, modes = 11, iter.max = 10)
+
+scrash_kmodes4$withindiff
+scrash_kmodes5$withindiff
+scrash_kmodes6$withindiff
+scrash_kmodes7$withindiff
+scrash_kmodes8$withindiff
+scrash_kmodes9$withindiff
+scrash_kmodes10$withindiff
+scrash_kmodes11$withindiff
+
+mean(scrash_kmodes4$withindiff)
+mean(scrash_kmodes5$withindiff)
+mean(scrash_kmodes6$withindiff)
+mean(scrash_kmodes7$withindiff)
+mean(scrash_kmodes8$withindiff)
+mean(scrash_kmodes9$withindiff)
+mean(scrash_kmodes10$withindiff)
+mean(scrash_kmodes11$withindiff)
+
+x <- c(4,5,6,7,8,9,10,11)
+y <- c(mean(scrash_kmodes4$withindiff), mean(scrash_kmodes5$withindiff), mean(scrash_kmodes6$withindiff), mean(scrash_kmodes7$withindiff), mean(scrash_kmodes8$withindiff), mean(scrash_kmodes9$withindiff), mean(scrash_kmodes10$withindiff), mean(scrash_kmodes11$withindiff))
+plot(x, y, xlab = "Number of Clusters", ylab = "Avg. Within Difference", main = "Avg. Cluster Within Diff as a function of # of Clusters")
+
+```
+
+It now appears there is a big drop between 4 and 5, and then it starts to level off.  I will use k = 5.
+
+```{r}
+crash_data_Small$kmodes_5_cluster <- scrash_kmodes5$cluster
+```
+
+
+And now we repeat the Pam Gower clustering with k from 5 to 7, looking at the graph from above.
+```{r}
+scrash_gower_dis <- crash_data_Small[1:6] #Exclude clusters from k-modes
+scrash_gower_dummy <- dummy.data.frame(crash_gower_dis)
+scrash_matrix_gower_mixed <- daisy(crash_gower_dummy, metric = "gower")
+
+scrash_gower_pam2 <- pam(crash_matrix_gower_mixed, k = 2)
+scrash_gower_pam5 <- pam(crash_matrix_gower_mixed, k = 5)
+scrash_gower_pam6 <- pam(crash_matrix_gower_mixed, k = 6)
+scrash_gower_pam7 <- pam(crash_matrix_gower_mixed, k = 7)
+
+scrash_gower_pam5$clusinfo
+scrash_gower_pam6$clusinfo
+scrash_gower_pam7$clusinfo
+
+print(scrash_gower_pam5$clusinfo)
+print(scrash_gower_pam6$clusinfo)
+print(scrash_gower_pam7$clusinfo)
+
+plot(scrash_gower_pam5)
+plot(scrash_gower_pam6)
+plot(scrash_gower_pam7)
+plot(scrash_gower_pam2)
+
+crash_data_Small$gowpam_5_cluster <- scrash_gower_pam5$clustering
+
+write.csv(crash_data_Small, "C:/Users/chris/Desktop/Course Materials/BIA 6301 Applied Data Mining/Homework 3/smallcrashcluster.csv")
+
+```
